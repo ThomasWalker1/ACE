@@ -1,0 +1,38 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "ace-rate-proxy"
+version = "0.1.0"
+description = "Analytical, training-free, differentiable rate proxy for compression-aware optimization"
+readme = "README.md"
+requires-python = ">=3.10,<3.13"
+dependencies = [
+  "numpy>=1.24,<3",
+  "pillow>=10,<12",
+  "torch==2.5.1",
+  "torchvision==0.20.1",
+  "tqdm>=4.65,<5",
+]
+
+[project.optional-dependencies]
+diffusion = [
+  "accelerate>=0.27,<2",
+  "clean-fid>=0.1.35,<1",
+  "datasets>=2.18,<5",
+  "diffusers>=0.27,<1",
+  "safetensors>=0.4,<1",
+  "transformers>=4.38,<6",
+]
+dev = ["pytest>=8,<9", "ruff>=0.5,<1"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["ace", "augmix"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
