@@ -1,0 +1,186 @@
+% ---------------------------------------------------------------------------
+\section{ACE: An Analytical and Differentiable Rate Proxy}
+\label{sec:proxy}
+% ---------------------------------------------------------------------------
+
+We first define ACE and show that it empirically tracks HEVC bitrate, then provide theoretical guarantees explaining why it does so and why its gradients are reliable.
+The definition is closed-form and requires no training data.
+The theory establishes three properties---entropy consistency, near-optimality under the standard natural-image model, and gradient alignment with the true HEVC rate---that together justify the use of its gradient as an optimization signal.
+
+\subsection{Definition and Calibration}
+\label{sec:definition}
+
+\begin{definition}[ACE]
+\label{def:proxy}
+Let $\bx \in [0,1]^{H \times W \times C}$ be an image.
+Partition $\bx$ into non-overlapping $B \times B$ blocks.
+For each block: subtract the block mean; apply the orthonormal 2D DCT-II to obtain $\bC = \bD\tilde{b}\bD^\top$; collect the AC coefficients $\ba = \left(\bC_{ij}\right)_{(i,j)\neq(0,0)}$.
+Let $\bc = (c_1,\ldots,c_M)$ be equally-spaced centers on $[-l,\,l]$ and set $\sigma>0$.
+The soft-histogram probability for bin $m$ is set as
+\begin{equation*}
+  \hat{p}_m = \frac{1}{|\ba|}\sum_{a \in \ba}
+    \frac{\exp(-\tfrac{(a-c_m)^2}{2\sigma^2})}
+         {\sum_{m'}\exp(-\tfrac{(a-c_{m'})^2}{2\sigma^2})},
+\end{equation*}
+such that the ACE rate of $\bx$ is $\hat{r}(\bx) = -\sum_{m} \hat{p}_m \log_2 \hat{p}_m$.
+\end{definition}
+
+ACE replicates HEVC's intra coding pipeline in a closed, differentiable form: block mean subtraction approximates DC intra prediction (HEVC mode 1); orthonormal DCT-II is equivalent to HEVC's transform; AC soft-histogram entropy approximates the CABAC output.
+No quantization simulation is included; ACE estimates the entropy of unquantized AC coefficients, which correlates strongly with the quantized coded rate (Table~\ref{tab:calibration}).
+
+ACE is applied independently to each color channel of $\bx$ and the per-channel values are summed to form $\hat{r}(\bx)$.
+HEVC codes chroma at reduced resolution with separate QP offsets.
+For simplicity, the calibration in Table~\ref{tab:calibration} compares the summed RGB proxy against HEVC's total reported bitrate (luma + chroma combined).
+The high within-CRF correlations ($r\ge0.90$) confirm that this simplified color treatment does not impair the gradient signal.
+
+Definition~\ref{def:proxy} requires the specification of different constants; we set $B=8$, $M=64$, $l=1.5$, and $\sigma=3.0/M$.
+AC coefficients outside the range $[-l,l]$ are soft-assigned to the nearest boundary bin by the Gaussian kernel.
+Empirically, only $0.017\%$ of Kodak~\citep{kodak1993} AC coefficients and $0.030\%$of a 500-image ImageNet~\citep{deng2009imagenet} sample fall outside $[-1.5, 1.5]$, confirming that the range covers the effective support of natural-image distributions.
+
+We validate ACE against the measured HEVC bitrate on all 24 Kodak images at CRF $\in\{22,27,32,37,42,47\}$ (144 (image, CRF) pairs).
+ACE is constant per image (QP-agnostic by design), so the 144-pair correlation has two orthogonal sources of variance: the across-image ranking signal and the CRF axis.
+Computing Pearson $r$ within each CRF (24 images per CRF) shows $r \in [0.903, 0.981]$ across all six quality levels, with a mean $r = 0.947$.
+Similarly, the mean Spearman correlation is $\varrho = 0.932$ (Table~\ref{tab:calibration}).
+This demonstrates that gradient descent on $\hat{r}$ moves the image toward a lower HEVC bitrate because images ranked lower by ACE are consistently ranked lower by HEVC at every quality level.
+
+\begin{table}[ht]
+  \centering
+  \small
+  \caption{
+  \textbf{ACE's bitrate values correlate in value and ordering with real images.}
+  Per-CRF calibration on Kodak (24 images): we compute Pearson $r$ and Spearman $\varrho$ correlations to assess image-level ranking within each quality level.}
+  \label{tab:calibration}
+  \begin{tabular}{lccccccr}
+    \toprule
+     & \multicolumn{6}{c}{CRF} & \\
+    \cmidrule(lr){2-7}
+    Metric & 22 & 27 & 32 & 37 & 42 & 47 & \textbf{Mean} \\
+    \midrule
+    Pearson $r$      & 0.933 & 0.955 & 0.977 & 0.981 & 0.934 & 0.903 & \textbf{0.947} \\
+    Spearman $\varrho$ & 0.911 & 0.953 & 0.984 & 0.949 & 0.919 & 0.875 & \textbf{0.932} \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+Gradient steps against ACE are lightweight, requiring approximately $5\,\text{ms}$ on an A100 GPU for a $768\times512$ Kodak image.
+Code~\ref{lst:proxy} gives the short, complete PyTorch implementation (using \texttt{torch\_dct.dct\_2d} for the orthonormal DCT-II\footnote{\texttt{pip install torch-dct}; the same result can be obtained via \texttt{torch.fft} without additional dependencies.}).
+
+\begin{tcolorbox}[
+    left=0mm, right=0mm, top=0mm, bottom=-1mm,
+    title=Code \ref{lst:proxy},
+    label={lst:proxy}
+]
+\begin{lstlisting}[numbers=left, xleftmargin=2em, numbersep=1em, frame=none]
+import torch
+import torch.nn.functional as F
+from torch_dct import dct_2d
+
+def dct_rate_proxy(x, M=64, lam_range=1.5):
+    B, C, H, W = x.shape
+    blocks = x.unfold(2, 8, 8).unfold(3, 8, 8)
+    blocks = blocks.contiguous().view(-1, 8, 8)
+    blocks = blocks - blocks.mean((-2, -1), keepdim=True)
+    coeffs = dct_2d(blocks, norm='ortho')
+    ac = coeffs.view(-1, 64)[:, 1:].reshape(-1)
+    sigma = (2 * lam_range) / M
+    centers = torch.linspace(-lam_range, lam_range, M, device=x.device)
+    log_w = -(ac[:, None] - centers[None, :]).pow(2) / (2 * sigma**2)
+    p = F.softmax(log_w, dim=-1).mean(0)
+    return -(p * p.clamp(min=1e-10).log2()).sum()
+\end{lstlisting}
+\end{tcolorbox}
+
+\subsection{Theoretical Analysis}
+\label{sec:theory}
+
+Three questions underpin the ACE's practical use.
+First, does the soft histogram actually measure entropy, or is it an arbitrary smooth function that merely looks entropy-like?
+Second, is the DCT a sensible choice of transform, or would an image-specific basis do substantially better?
+Third, and most directly relevant to gradient-based optimization, does $\nabla_{\bx}\hat{r}$ point in the same direction as the gradient of the true HEVC rate?
+The three propositions below answer each question in turn.
+
+\paragraph{Does the soft histogram measure entropy?}
+The soft-histogram construction in Definition~\ref{def:proxy} is a Gaussian kernel density estimate of the AC coefficient distribution, evaluated on a uniform grid of $M$ centers.
+It is not obvious that the resulting quantity relates to Shannon entropy.
+The following proposition confirms that it does.
+
+\begin{proposition}
+\label{prop:convergence}
+Let $p_A$ be bounded and Lipschitz on $[-R,R]$, and let $\sigma>0$ be fixed.
+As $M\to\infty$ and $n\to\infty$ with $n\sigma\to\infty$, we have
+\[
+  \hat{H}_M \;\xrightarrow{P}\; H(A) + \log_2(2\sigma\sqrt{2\pi e}) + o(1).
+\]
+The bias $B(\sigma)=\log_2(2\sigma\sqrt{2\pi e})$ depends only on $\sigma$, not on $\bx$.  Consequently, (i)~differences $\hat{H}_M(\bx)-\hat{H}_M(\bx^{\prime})$ converge to $H(A_{\bx})-H(A_{\bx^{\prime}})$, and (ii)~$\nabla_{\bx}\hat{r}$ is a consistent estimator of $\nabla_{\bx}H(A)$.
+\end{proposition}
+
+\begin{proof}[Proof sketch]
+Soft assignment approximates a Gaussian KDE~\citep{parzen1962estimation}.
+By standard KDE theory, $\hat{p}_A(a)\to p_A(a)$ uniformly in probability as $n\to\infty$, $\sigma\to0$, $n\sigma\to\infty$ with $\sigma$ fixed.
+The Riemann sum over $M$ bins converges to the integral defining $H(A)$, with discretization error $O(1/M)$.
+Because $B(\sigma)$ is the same for every image $\bx$, it cancels in differences, and its gradient with respect to $\bx$ is zero.
+\end{proof}
+
+In plain terms: the soft histogram is a biased but \emph{consistent} estimator of differential entropy.
+The bias is a fixed shift that depends only on the bandwidth $\sigma$, so it plays no role in comparisons between images or in gradient descent.
+What the proxy minimizes, in the limit, is precisely the differential entropy of the AC coefficient distribution.
+
+\paragraph{Is the DCT a good transform for this purpose?}
+The rate of an entropy coder is minimized by the Karhunen--Lo\`eve transform (KLT), which diagonalizes the signal's covariance and concentrates energy into as few coefficients as possible.
+The DCT-II is used in practice because it is data-independent, fast, and---for natural images---a near-perfect approximation to the KLT.
+The next proposition quantifies how near.
+
+\begin{proposition}
+\label{prop:klt}
+Let $\bx$ be a stationary Gaussian AR(1) field.
+For $B$-pixel blocks, DCT-II approximates the KLT eigenvalues with error $O(1/B^2)$~\citep{clarke1985transform}.
+Because the entropy rate of a Gaussian source is a concave function of log-eigenvalues (via the water-filling formula), this spectral error translates to a rate error $|\hat{r}(\bx) - R^*(\bx)| = O(1/B^2)$.
+For $B=8$, $1/B^2 = 1/64 \approx 0.016$, providing a tight approximation.
+\end{proposition}
+
+\begin{corollary}
+Natural images are well modeled by Markov-1 fields~\citep{habibi1971comparison}.
+Minimizing $\hat{r}$ on natural images therefore minimizes a near-optimal proxy for the entropy-coded rate without any codec-specific training.
+\end{corollary}
+
+Intuitively, the DCT's near-optimality on natural images is why HEVC uses it: the $O(1/B^2)$ gap is small enough at $B$ equal to $8$ that learning an image-specific basis (as in KLT-based schemes) yields negligible gain.
+The same reasoning justifies using the DCT proxy without codec-labeled data.
+
+\paragraph{Does the proxy gradient point the right way?}
+Propositions~\ref{prop:convergence} and~\ref{prop:klt} establish that $\hat{r}$ tracks the true entropy-coded rate.
+But for gradient-based optimization, the value of $\hat{r}$ matters less than the \emph{direction} of $\nabla_{\bx}\hat{r}$.
+A proxy that correlates well in absolute value could still mislead if its gradient points in a different direction from the true rate gradient.
+
+\begin{proposition}[Expected gradient alignment]
+\label{prop:grad}
+Let $R_\epsilon(\bx)$ denote the mollified HEVC rate, obtained by replacing hard quantization with soft rounding of width $\epsilon$ and CABAC with its differentiable entropy approximation~\citep{balle2018variational}.
+$\nabla_{\bx} \hat{r}(\bx)$ shares the block-diagonal DCT-II Jacobian structure of $\nabla_{\bx} R_\epsilon$.
+Let $\bx$ be drawn from a distribution over natural images satisfying the Markov-1 model.
+Then
+\[
+  \mathbb{E}_{\bx}\big[\langle \nabla_{\bx}\hat r(\bx),\, \nabla_{\bx} R_\epsilon(\bx)\rangle\big] > 0,
+\]
+and for each AC frequency coordinate $k$,
+\[
+  \Pr_{\bx}\!\left(\operatorname{sign}\!\left(\tfrac{\partial \hat r}{\partial a_k}\right) = \operatorname{sign}\!\left(\tfrac{\partial R_\epsilon}{\partial a_k}\right)\right) > \tfrac12.
+\]
+\end{proposition}
+
+\begin{proof}[Proof sketch]
+By the chain rule, $\nabla_{\bx}\hat{r} = (\partial\ba/\partial\bx)^\top\nabla_{\ba}\hat{H}$, where $\partial\ba/\partial\bx$ is block-diagonal with the DCT-II matrix on each block---the same Jacobian structure as $\nabla_{\bx} R_\epsilon$.
+It therefore suffices to show $\langle\nabla_{\ba}\hat{H},\nabla_{\ba} H_\epsilon\rangle > 0$ in expectation and coordinatewise sign agreement with probability exceeding one half, where $H_\epsilon$ denotes $R_\epsilon$ viewed as a function of the AC coefficients $\ba$.
+
+Under the Markov-1 model, AC coefficients are approximately independent zero-mean Gaussians with frequency-dependent variances $\sigma_k^2$~\citep{clarke1985transform}.
+For a zero-mean Gaussian source, differential entropy is strictly monotone in variance: $\partial H / \partial \sigma_k^2 > 0$.
+Increasing $|a_k|$ increases the empirical estimate of $\sigma_k^2$, so $\partial H / \partial |a_k| > 0$.
+The same monotonicity holds for $H_\epsilon$ under the soft-rounding entropy model of~\citet{balle2018variational}: the mollified quantization noise adds a fixed variance floor that does not change the sign of the derivative.
+Under the idealized independent-Gaussian model, $\nabla_{\ba}\hat{H}$ and $\nabla_{\ba} H_\epsilon$ therefore agree in sign coordinatewise, giving the stated expectation and per-coordinate probability bounds.
+Real AC coefficients deviate from this idealization---heavier tails, cross-band correlation, and occasional multimodal blocks at edges and textures---so the coordinatewise agreement is a property that holds on average over natural images rather than at every coordinate of every image, which is why the proposition is stated in expectation and probability rather than pointwise.
+\end{proof}
+
+We verify gradient consistency empirically by computing, for each of the 63 AC frequency bands, the centered finite-difference sensitivity of both the proxy and the JPEG rate (Pillow, quality 50) to a $\pm30\%$ scaling of each band's energy, then measuring the cosine similarity of the resulting 63-dimensional gradient vectors.
+JPEG uses the same DCT-II structure as the proxy, making it the most direct empirical counterpart.
+Across all 24 Kodak images, the mean cosine similarity is $0.48 \pm 0.18$ (all values positive), directly confirming the expectation statement, and the sign of the two gradients agrees in 87\% of AC bands, confirming the per-coordinate probability statement well above the $\tfrac12$ threshold.
+
+This is the central property that makes ACE useful as an optimization signal.
+Together, it follows that ACE measures something close to entropy (Proposition~\ref{prop:convergence}), in a way that is a near-optimal rate proxy for the DCT (Proposition~\ref{prop:klt}), and has gradients that push the image in the correct direction to reduce the true coded rate in expectation (Proposition~\ref{prop:grad}).

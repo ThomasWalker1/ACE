@@ -1,0 +1,17 @@
+% ---------------------------------------------------------------------------
+\section{Conclusion}
+% ---------------------------------------------------------------------------
+
+We introduced ACE, an analytical, training-free DCT rate proxy derived from the HEVC specification.
+Three theoretical results establish convergence, near-optimality under the Markov-1 image model, and gradient consistency with the true HEVC rate.
+In turn, establishing ACE as a reliable proxy to perform compression-aware gradient-based optimization.
+
+We demonstrated this utility on four tasks.
+At inference time, minimizing ACE with an $\ell_2$ fidelity anchor recovers $32\%$--$45\%$ of the clean--adversarial accuracy gap on without any knowledge of the attack or classifier, compared to $3\%$--$20\%$ for JPEG compression at matched quality.
+At training time, applying ACE gradient steps as data augmentation (ACEAug) improves robustness to CIFAR-10-C corruption with negligible clean-accuracy cost.
+In particular, ACEAug provides an additive gain on top of the strong AugMix baseline, confirming that the frequency-domain signal is orthogonal to the geometric and photometric perturbations covered by AugMix.
+The same signal generalizes in three further directions.
+Used to constrain an attack's own perturbation rather than to remove one, as a zero-parameter penalty on intermediate features, as a diffusion guidance term.
+
+ACE is a few-line, parameter-free component that can be dropped into any pipeline that requires a differentiable approximation of HEVC bitrate.
+Currently, the proxy targets $8\times8$ blocks; it is left to future work to explore modeling multi-scale partitioning and multiple intra-prediction modes in HEVC, and the potential applications this unlocks.

@@ -1,0 +1,17 @@
+% ---------------------------------------------------------------------------
+\section{Introduction}
+% ---------------------------------------------------------------------------
+
+Gradient-based optimization in image codecs is hindered by quantization and entropy coding, both of which are non-differentiable.
+The standard workaround is a differentiable rate proxy---a smooth function whose gradient with respect to pixel values points in the same direction as the true codec rate~\citep{balle2018variational,guo2026generative}.
+
+Every existing proxy requires training.
+\citet{balle2018variational} uses additive uniform noise and a learned entropy model; \citet{mentzer2018conditional} a per-pixel conditional distribution; \citet{guo2026generative} a diff-BPG network that simulates BPG's full intra prediction and entropy coding pipeline.
+All three undergo a second training stage specific to a given codec configuration, which requires codec-labeled data.
+
+We observe that HEVC's rate---the common standard for video/image compression---is dominated by the entropy of AC DCT-II coefficients~\citep{sullivan2012hevc}, and that those coefficients can be computed \emph{analytically} from any image in closed form.
+ACE works by relaxing the subsequent encoding of the coefficients in the HEVC pipeline using a Gaussian soft assignment, yielding a fully differentiable, parameter-free rate estimator.
+Thus, ACE's gradient is well-defined everywhere, and we show that it points in the direction of decreasing AC coefficient entropy---precisely the direction that lowers HEVC's coded bitrate (\S\ref{sec:proxy}).
+
+Differentiable rate proxies serve as an efficient tool for problems in which a signal must be steered toward compressibility.
+We demonstrate that ACE is as a lightweight, parameter-free, drop-in tool for four such tasks across perturbation space (\S\ref{sec:adv_pur} and \S\ref{sec:survival}), pixel space (\S\ref{sec:aug}), feature space (\S\ref{sec:split}), and generative sampling (\S\ref{sec:diffguide}).

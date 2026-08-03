@@ -1,0 +1,28 @@
+% ---------------------------------------------------------------------------
+\section{Background}
+\label{sec:background}
+% ---------------------------------------------------------------------------
+
+HEVC (High Efficiency Video Coding, also known as H.265) is the video/image compression standard that underlies most modern lossy codecs~\citep{sullivan2012hevc}. 
+Like JPEG before it, HEVC compresses an image by splitting it into $B\times B$ blocks, transforming each block from pixel values into a frequency representation, and then entropy-coding that representation.
+
+The transform used is the DCT-II (the two-dimensional discrete cosine transform), which converts a block of pixel intensities into a set of coefficients describing how much energy the block contains at each spatial frequency. 
+The single lowest-frequency coefficient, the DC term, captures the block's average intensity and is coded separately via intra prediction; the remaining 63 coefficients, the AC coefficients, capture the block's edges and texture at increasingly fine spatial scales.
+Because natural image blocks are smooth almost everywhere, most AC coefficients are close to zero, and it is precisely this concentration --- the fact that the AC coefficient distribution has low entropy --- that the entropy coder (CABAC, in HEVC) exploits to produce a small file. 
+Conversely, a block with textured, noisy, or adversarially perturbed content spreads energy across many AC coefficients, raising their entropy and inflating the coded bitrate. 
+This is why HEVC's coded rate is dominated by the entropy of the AC coefficients~\citep{sullivan2012hevc}.
+
+To obtain differentiable proxies of this procedure: \citet{balle2018variational} replace quantization with additive uniform noise and a learned entropy model for end-to-end learned compression.
+\citet{mentzer2018conditional} uses a per-pixel conditional distribution.
+\citet{guo2026generative} trains a diff-BPG network that simulates BPG's full pipeline, then uses it to fine-tune a diffusion preprocessor.
+All learned surrogates require codec-labeled training data and are specific to a given codec or QP range.
+
+Closed-form, training-free rate estimation has existed in the form of Lagrangian rate-distortion optimization (RDO) to facilitate mode-decision inside HEVC/H.264 encoders, precisely because running the actual entropy coder at every candidate mode is too slow~\citep{sullivan1998rdo}. 
+These estimates are derived from the same DCT/entropy-coding pipeline that ACE models, but they are used to rank a discrete set of candidate encoder modes, not to take a gradient step on the input itself.
+
+ACE's contribution is therefore not that it is analytical---RDO cost estimates are too---but that it is differentiable with respect to the image or feature map itself, letting gradient steps be taken directly in pixel, feature, or latent space toward arbitrary downstream objectives (\S\ref{sec:applications}), rather than only ranking a finite set of encoder-internal choices.
+
+After establishing theoretically that ACE is an accurate and reliable differentiable rate proxy (\S \ref{sec:proxy}), we explore its utility in various machine learning applications, such as robustness.
+Robustness requires that the outputs of machine learning models remain stable under small input perturbations.
+However, gradient-based attacks (FGSM~\citep{goodfellow2014explaining}, PGD~\citep{madry2017towards}) can produce perturbations that, while small in $\ell_\infty$ norm, fool machine learning systems.
+JPEG compression~\citep{guo2018countering} purifies adversarial examples via hard DCT quantization; our proxy is a soft, differentiable analog.

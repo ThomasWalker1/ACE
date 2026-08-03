@@ -1,0 +1,343 @@
+% ---------------------------------------------------------------------------
+\section{Applications}
+\label{sec:applications}
+% ---------------------------------------------------------------------------
+
+In this section, we exploit the directional consistency of ACE's gradient with respect to HEVC's bitrate to perform compression-aware optimization to defend against adversarial attacks at inference time (\S~\ref{sec:adv_pur}), improve machine learning model robustness through training-time interventions (\S~\ref{sec:aug}), improve attack success rate against compression-based defenses (\S~\ref{sec:survival}), facilitate effective split-inference (\S~\ref{sec:split}), and guide diffusion to high-quality yet compressible outputs (\S~\ref{sec:diffguide}).
+In each case, ACE is used as is, with no requirement for training or hyperparameter tuning.
+
+\subsection{Adversarial Purification}\label{sec:adv_pur}
+
+Adversarial perturbations are crafted to maximize a classifier's error while remaining small in the $\ell_\infty$ norm.
+Here, we demonstrate that ACE's gradients can be used as a purification signal to reverse the adversarial nature of the perturbations.
+
+Given an adversarial image $\bx_\mathrm{adv}$, we run Adam~\citep{kingma2014adam} for $T$ steps minimizing ACE with a fidelity constraint
+\begin{equation}
+  \bx_{t+1} = \mathrm{clip}_{[0,1]}\!\left(
+    \bx_t - \eta\nabla_{\bx_t}
+    \left(\frac{1}{2}\|\bx_t - \bx_\mathrm{adv}\|_2^2
+          + \lambda\,\hat{r}(\bx_t)\right)
+  \right).
+  \label{eq:purify}
+\end{equation}
+The $\ell_2$ term keeps the purified image close to the adversarial input, preventing the proxy from smoothing away semantically relevant content.
+The hyperparameters $T$ and $\lambda$ trade off compute budget and fidelity, respectively.
+
+Figure~\ref{fig:purification} summarizes performance on ResNet-50~\citep{he2016resnet} trained on ImageNet.
+The left panel reports top-1 accuracy at $T=10$ across four attack configurations, and shows that through ACE's gradient \eqref{eq:purify} can help recover $32\%$--$45\%$ of the clean--adversarial gap, compared to $3\%$--$20\%$ for JPEG compression at quality $Q$ equal to $75$---the non-differentiable hard-quantization analog of the proxy.
+The right panel traces the operating envelope for all four attacks as $T$ increases from $0$ to $30$, showing that recovery peaks at $T=10$ for every configuration, and that subsequent steps erode clean accuracy without additional adversarial benefit.
+
+\begin{figure}[ht]
+  \centering
+  \begin{minipage}[t]{0.46\linewidth}
+    \centering
+    \vspace{0pt}
+    \scriptsize
+    \begin{tabular}{lcccc}
+      \toprule
+      Attack & $\varepsilon$ & Adv & JPEG & DCT \\
+      \midrule
+      FGSM   & 4/255 & 6.3 & 17.0 (15.6\%) & 33.2 (38.8\%) \\
+      FGSM   & 8/255 & 6.9 & 13.4 (9.4\%) & 29.2 (32.3\%) \\
+      PGD-10 & 4/255 & 0.0 & 15.2 (20.1\%) & 34.2 (45.2\%) \\
+      PGD-10 & 8/255 & 0.0 & 2.1 (2.7\%) & 30.0 (39.6\%) \\
+      \bottomrule
+    \end{tabular}
+  \end{minipage}%
+  \hfill
+  \begin{minipage}[t]{0.51\linewidth}
+    \centering
+    \vspace{0pt}
+    \begin{tikzpicture}
+    \begin{axis}[
+      width  = \linewidth,
+      height = 0.65\linewidth,
+      xlabel = {Clean accuracy drop (\%)},
+      ylabel = {Gap recovery (\%)},
+      xmin=-2,  xmax=60,
+      ymin=-3,  ymax=52,
+      xtick={0,10,20,30,40,50},
+      ytick={0,10,20,30,40,50},
+      tick label style={font=\scriptsize},
+      label style={font=\small},
+      legend style={font=\tiny, at={(0.98,0.02)}, anchor=south east,
+                    row sep=-2pt},
+      legend columns=2,
+    ]
+      \addplot[color=proxyblue, line width=1.8pt,
+               mark=*, mark size=1.8pt, mark options={fill=proxyblue}]
+        table[col sep=comma, x=clean_drop_pp, y=recovery_pct]
+        {figures/data/lam010_pgd_eps4.csv};
+      \addlegendentry{PGD-10 $\varepsilon{=}4$}
+
+      \addplot[color=proxyblue, line width=1.8pt, dashed,
+               mark=square*, mark size=1.6pt, mark options={fill=proxyblue}]
+        table[col sep=comma, x=clean_drop_pp, y=recovery_pct]
+        {figures/data/lam010_pgd_eps8.csv};
+      \addlegendentry{PGD-10 $\varepsilon{=}8$}
+
+      \addplot[color=black!50, line width=1.8pt,
+               mark=triangle*, mark size=1.8pt, mark options={fill=black!50}]
+        table[col sep=comma, x=clean_drop_pp, y=recovery_pct]
+        {figures/data/lam010_fgsm_eps4.csv};
+      \addlegendentry{FGSM $\varepsilon{=}4$}
+
+      \addplot[color=black!50, line width=1.8pt, dashed,
+               mark=diamond*, mark size=1.8pt, mark options={fill=black!50}]
+        table[col sep=comma, x=clean_drop_pp, y=recovery_pct]
+        {figures/data/lam010_fgsm_eps8.csv};
+      \addlegendentry{FGSM $\varepsilon{=}8$}
+
+    \end{axis}
+    \end{tikzpicture}
+  \end{minipage}
+  \caption{
+  \textbf{ACE's gradient signals can purify adversarial perturbations to recover classifier performance.}
+  We consider purification using \eqref{eq:purify} with $\eta=0.01$ and $\lambda=0.1$.
+  Results are averaged across 1000 ImageNet images.
+  On the left, we record the top-1 accuracy at $T{=}10$ across FGSM and PGD-10 attacks, with JPEG ($Q{=}75$) included as the non-differentiable analog.
+  The parentheses show the clean--adversarial gap recovered.
+  On the right, we consider values of $T$ from 0 to 30 at increments of 5 for all four attack configurations.
+  }
+  \label{fig:purification}
+\end{figure}
+
+Using ACE, we can examine the effects of adversarial perturbations on the DCT spectrum and how the DCT purification influences it.
+Table~\ref{tab:freq} reports the mean AC DCT entropy per frequency sub-band under clean, adversarial, and purified conditions.
+Adversarial perturbations inflate entropy by $+0.009$--$+0.022$ bits in \emph{every} band, not only in high frequencies as the $\ell_\infty$ attack construction might suggest.
+The proxy's global AC-entropy minimization consequently reduces all bands uniformly ($-0.26$ bits total), removing adversarial content as a side effect of broadband smoothing.
+
+\begin{table}[ht]
+  \centering
+  \small
+  \caption{
+  \textbf{Adversarial perturbations span AC coefficients uniformly, and ACE's gradient uniformly suppresses AC coefficients.}
+  Mean AC DCT entropy (bits) by frequency sub-band.
+  Values are averaged across 200 ImageNet images.
+  }
+  \label{tab:freq}
+  \begin{tabular}{lcccc}
+    \toprule
+    Condition & Low (0--20) & Mid (21--41) & High (42--62) & Total \\
+    \midrule
+    Clean              & 3.418 & 2.809 & 2.676 & 2.968 \\
+    FGSM ($\varepsilon=4/255$)   & 3.439 & 2.833 & 2.697 & 2.990 \\
+    PGD-10 ($\varepsilon=4/255$) & 3.426 & 2.819 & 2.687 & 2.977 \\
+    Purified (FGSM)    & 2.869 & 2.625 & 2.617 & 2.704 \\
+    Purified (PGD)     & 2.868 & 2.624 & 2.616 & 2.703 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+Because adversarial energy is distributed broadly, a proxy restricted to high frequencies cannot remove it.
+We confirm this by considering three variants on a 500-image PGD-10 evaluation.
+The \emph{full} proxy over all 63 AC coefficients ($i{+}j\ge1$), a \emph{mid+high} proxy over 49 coefficients ($i{+}j\ge5$), and a \emph{high-only} proxy over 21 coefficients ($i{+}j\ge9$).
+
+\begin{table}[ht]
+  \centering
+  \caption{
+  \textbf{To purify adversarial perturbations, it is necessary to suppress signals across all frequency bands, not just high frequencies.}
+  Here we measure ACE's ability to purify adversarial perturbations when restricted to high ($i+j\geq9$), mid-to-high ($i+j\geq5$), or full ($i+j\geq1$) AC coefficients.
+  Adversarial perturbations are constructed using PGD-10 at $\varepsilon=4/255$, and $\lambda=0.05$ in \eqref{eq:purify} is used.
+  }
+  \label{tab:freq_ablation}
+  \begin{tabular}{lcccc}
+    \toprule
+    ACE variant & AC coefs & $T=5$ & $T=10$ & $T=20$ \\
+    \midrule
+    Full & 63 & 41.4\% & 42.1\% & 24.3\% \\
+    Mid-to-high & 49 & 17.4\% &  21.7\% & 18.1\% \\
+    High & 21 & 0.0\% & 0.0\% &  0.0\% \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+Table~\ref{tab:freq_ablation} shows that a proxy restricted to high coefficients achieves $0\%$ recovery, and a recovery restricted to mid-to-high coefficients only partially recovers accuracy. 
+
+% ---------------------------------------------------------------------------
+\subsection{Training-Time Augmentation}
+\label{sec:aug}
+% ---------------------------------------------------------------------------
+
+The same ACE gradient used for inference-time purification can be applied during training.
+Given a clean image $\bx$, run $T$ steps of~\eqref{eq:purify} as a form of data augmentation.
+This exposes the model to images with reduced AC entropy---a structured transformation distinct from standard augmentations such as random crops, color jitter, or JPEG augmentation.
+
+We train a ResNet-18 on CIFAR-10~\citep{krizhevsky2009learning} for 100 epochs with cosine learning rate decay, batch size 128, SGD with momentum 0.9, and weight decay $5\times10^{-4}$.
+We test four augmentation pipelines: \emph{baseline} uses random crop and horizontal flip only; \emph{ACEAug} additionally considers ACEd images with $T=5$, $\lambda=0.05$, and $p=0.5$; \emph{AugMix} uses JSD consistency loss with weight 12, width 3, and severity 3 from~\citet{hendrycks2020augmix}; and \emph{AugMix+ACEAug} which additionally considers ACEAug.
+All conditions use the same architecture and optimizer; results are averaged over 3 random seeds.
+
+We report top-1 accuracy on CIFAR-10-C~\citep{hendrycks2019benchmarking}, which contains 15 corruption types, each with five severity levels.
+We compute the mean accuracy over all 15 corruptions and 5 severity levels, and the mean Corruption Error (mCE) relative to AlexNet~\citep{krizhevsky2012imagenet}.
+
+\begin{table}[h]
+  \centering
+  \small
+  \caption{
+    \textbf{ACEd images improve CIFAR-10-C corruption robustness beyond the benefits already provided by AugMix.}
+    Per-category values are means over 3 seeds, with standard deviation also reported.}
+  \label{tab:cifar_c}
+  \begin{tabular}{lcccc}
+    \toprule
+    Category & Baseline & ACEAug & AugMix & AugMix+ACEAug \\
+    \midrule
+    Noise (gaussian, shot, impulse)             & 51.9 & 60.8 & 83.2 & \textbf{84.0} \\
+    Blur (defocus, glass, motion, zoom)          & 73.5 & 79.7 & 89.9 & \textbf{90.0} \\
+    Weather (snow, frost, fog, brightness)      & 85.7 & 88.5 & 91.4 & \textbf{91.4} \\
+    Digital (contrast, elastic, pixelate, JPEG) & 79.2 & 84.7 & 89.5 & \textbf{89.8} \\
+    \midrule
+    \textbf{Mean (15 corruptions)}              & $74.0 \pm 1.3$ & $79.6 \pm 0.2$ & $88.8 \pm 0.2$ & $\mathbf{89.1 \pm 0.1}$ \\
+    mCE (vs.\ AlexNet, $\downarrow$)            & $33.8 \pm 1.6$ & $26.2 \pm 0.2$ & $14.9 \pm 0.2$ & $\mathbf{14.4 \pm 0.2}$ \\
+    \midrule
+    Clean (CIFAR-10 test)                       & $95.0 \pm 0.2$ & $94.8 \pm 0.1$ & $95.4 \pm 0.0$ & $95.0 \pm 0.1$ \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+All four corruption categories improve when ACEAug is added to the standard baseline (Table~\ref{tab:cifar_c}), with gains of $+6.2$~pp (Blur), $+5.5$~pp (Digital), $+8.9$~pp (Noise), and $+2.8$~pp (Weather).
+The largest per-corruption gains are in \emph{pixelate} and \emph{zoom blur}, both of which reduce high-frequency content in a manner structurally similar to the proxy's AC-entropy minimization.
+\emph{JPEG compression} also improves substantially---the direct analog of the proxy's transform-domain smoothing.
+
+AugMix already reduces mCE to $14.9 \pm 0.2$, and adding ACEAug further reduces it by $0.5$ points, with gains visible across all four corruption categories and no meaningful clean-accuracy cost.
+This additive improvement demonstrates that ACEAug captures frequency-domain structure that is orthogonal to the geometric and photometric variations covered by AugMix's augmentation chain.
+ACEAug acts on AC coefficient statistics, while AugMix's operations primarily perturb spatial geometry and color, leaving complementary room for the proxy to reduce sensitivity to coding artifacts.
+ACEAug mCE variance is very low ($\pm 0.2$) in both the baseline and AugMix settings, confirming that the benefit is reliable across random seeds.
+
+% ---------------------------------------------------------------------------
+\subsection{Compression-Surviving Adversarial Perturbations}
+\label{sec:survival}
+% ---------------------------------------------------------------------------
+
+Section~\ref{sec:adv_pur} used ACE to \emph{remove} adversarial content by exploiting the fact that PGD perturbations inflate AC entropy.
+The same signal can be reversed to craft perturbations that retain their structure even when passed through a lossy codec.
+This matters for physical-world attacks (printed patches, camera-captured stickers), which must survive JPEG or HEVC transcoding at some point in the capture pipeline~\citep{shin2017jpeg}.
+
+We add the proxy as a differentiable constraint on the perturbation during attack construction.
+In particular, using PGD-10 on a ResNet-50 ImageNet classifier to minimize classifier confidence plus $\mu\,\hat{r}(\delta)$, where $\delta$ is the perturbation itself.
+We measure the \emph{survival rate}, the fraction of pre-compression attack strength retained after JPEG or HEVC compression for $\mu\in\{0,1.0\}$ and $\varepsilon\in\{4/255,8/255\}$.
+The clean accuracy of the classifier is $73.1\%$.
+
+\begin{table}[h]
+  \centering
+  \small
+  \caption{
+  \textbf{ACE's proxy gradient successfully constructs adversarial perturbations to survive lossy codec compression.}
+  Results are averaged across 200 images.}
+  \label{tab:survival}
+  \begin{tabular}{lccccc}
+    \toprule
+    $\varepsilon$ & $\mu$ & $\delta$-BPP & Surv.\ JPEG-50 & Surv.\ JPEG-75 & Surv.\ HEVC-32 \\
+    \midrule
+    \multirow{2}{*}{4/255}
+      & 0 & 4.884 & 48.0\% & 77.7\% & 29.7\% \\
+      & 1.0              & 4.594 & 62.4\% & 90.1\% & 34.4\% \\
+      \midrule
+    \multirow{2}{*}{8/255}
+      & 0 & 4.830 & 71.7\% & 98.1\% & 36.8\% \\
+      & 1.0              & 4.635 & 85.5\% & 97.6\% & 42.4\% \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+ACE lowers the perturbation's own AC entropy ($\delta$-BPP drops $0.2$--$0.4$ bits across all $\mu$), which translates into $+14$pp survival at JPEG-50 and $+5$--$6$pp at HEVC-32 across both $\varepsilon$ (Table~\ref{tab:survival}).
+Mechanistically, this is the exact mirror of Section~\ref{sec:adv_pur}: there, the proxy's gradient removes perturbations that inflate AC entropy; here, the same gradient signal is used at construction time to keep a perturbation's energy in the codec's low-entropy null space.
+
+% ---------------------------------------------------------------------------
+\subsection{Compressible Features for Split Inference}
+\label{sec:split}
+% ---------------------------------------------------------------------------
+
+Split inference partitions a network's computation by transmitting the intermediate feature map over a bandwidth-constrained channel, facilitating computation across edge devices and servers~\citep{kang2017neurosurgeon}.
+Existing feature-compression approaches either learn a dedicated bottleneck layer~\citep{shi2019bottlenet} or use a fixed quantization scheme; both add parameters or ignore compressibility during training.
+Using ACE, we directly incorporate compressibility into the training loss by treating the intermediate feature maps as pseudo-images, $\mathcal{L} = \mathcal{L}_{\text{CE}} + \lambda\,\hat{r}(\text{features})$.
+
+We finetune a pretrained ResNet-50 split at the layer2 output on ImageNet, SGD with frozen batch normalization, cosine learning rate, 20 epochs, comparing a baseline ($\lambda=0$) and compression-aware ($\lambda=0.1$) model.
+Both reach $75.9\%$ uncompressed top-1 accuracy.
+At inference time, we compress the transmitted features using JPEG at several quality levels and report top-1 accuracy as a function of bits per spatial position (bpsp).
+
+\begin{table}[h]
+  \centering
+  \small
+  \caption{
+  \textbf{ACE's gradients can be utilized during training to improve the compression rate of intermediate features, without sacrificing performance.}
+  Here, we provide a rate-distortion comparison at matched feature bitrate between the baseline and the compression-aware model.
+  }
+  \label{tab:split}
+  \begin{tabular}{lcc}
+    \toprule
+    bpsp & Baseline Acc.\ & Compression-aware Acc.\ \\
+    \midrule
+    $\sim$1274 & $\sim$43\% & \textbf{47.7\%} \\
+    $\sim$1360 & $\sim$50\% & \textbf{55.1\%} \\
+    $\sim$1486 & $\sim$57\% & \textbf{61.2\%} \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+The proxy shifts the feature RD curve toward the origin: at matched bpsp, the proxy-trained features give $+4$--$5$pp accuracy (Table~\ref{tab:split}), thereby reaching the same accuracy at $7$--$14\%$ lower bitrate.
+This is a direct file-size effect: training with the proxy penalty reduces feature AC entropy by $0.435$ bits/position, which lowers the resulting JPEG file size by $7$--$14\%$ across all quality settings tested.
+The result confirms that ACE's DCT-entropy signal is not specific to RGB pixel statistics---it transfers, with zero added parameters, to learned intermediate representations that are not natural images.
+
+% ---------------------------------------------------------------------------
+\subsection{Rate-Constrained Guidance in Diffusion Sampling}
+\label{sec:diffguide}
+% ---------------------------------------------------------------------------
+
+Diffusion samplers admit differentiable guidance terms added at each denoising step, as in classifier guidance~\citep{dhariwal2021diffusion}.
+Adding $\lambda\,\nabla_{\bx_t}\hat{r}(\hat{\bx}_0)$ to the DDIM~\citep{song2021ddim} update steers generation toward images that are cheaper to code---useful for streaming or broadcast pipelines where generated content must not cause bitrate spikes.
+Unlike classifier or CLIP guidance~\citep{mishra2024image}, ACE requires no auxiliary network.
+
+We guide Stable Diffusion~1.5~\citep{rombach2022latent} (using 50 DDIM steps, with guidance applied only on the last 25 steps), and measure mean bitrate, FID~\citep{heusel2017fid}, and CLIP score~\citep{hessel2021clipscore}.
+We sweep $\lambda\in\{0,20,50,100,200,400,800\}$, to trace the full fidelity--rate trade-off.
+
+\begin{figure}[ht]
+  \centering
+  \begin{tikzpicture}
+  \begin{groupplot}[
+    group style={group size=3 by 1, horizontal sep=1.4cm},
+    width=0.34\linewidth,
+    height=0.28\linewidth,
+    xmode=log,
+    log basis x={2},
+    xlabel={$\lambda$},
+    xmin=15, xmax=1000,
+    tick label style={font=\scriptsize},
+    label style={font=\footnotesize},
+    legend style={font=\scriptsize},
+  ]
+  \nextgroupplot[
+    ylabel={Bitrate},
+  ]
+    \addplot[color=black!50, dashed, line width=1pt, domain=15:2000] {0.4194};
+    \addplot[color=proxyblue, line width=1.8pt, mark=*, mark size=1.6pt,
+             mark options={fill=proxyblue}]
+      table[col sep=comma, x=lam, y=hevc_bpp] {figures/data/diffusion_guidance_v3.csv};
+  \nextgroupplot[
+    ylabel={FID},
+  ]
+    \addplot[color=black!50, dashed, line width=1pt, domain=15:2000] {24.26};
+    \addplot[color=proxyblue, line width=1.8pt, mark=*, mark size=1.6pt,
+             mark options={fill=proxyblue}]
+      table[col sep=comma, x=lam, y=fid] {figures/data/diffusion_guidance_v3.csv};
+  \nextgroupplot[
+    ylabel={CLIP score},
+  ]
+    \addplot[color=black!50, dashed, line width=1pt, domain=15:2000] {31.24};
+    \addplot[color=proxyblue, line width=1.8pt, mark=*, mark size=1.6pt,
+             mark options={fill=proxyblue}]
+      table[col sep=comma, x=lam, y=clip_score] {figures/data/diffusion_guidance_v3.csv};
+  \end{groupplot}
+  \end{tikzpicture}
+  \caption{
+  \textbf{ACE-guided image generation meaningfully improves the compressibility of outputs whilst maintaining their overall quality}.
+  Bitrate is measured using HEVC CRF~32.
+  The dashed line gives the unguided $\lambda$ equal to $0$ baseline.
+  Values are measured against 5000 COCO-val references~\citep{lin2014coco}.
+  }
+  \label{fig:diffguide}
+\end{figure}
+
+Figure~\ref{fig:diffguide} shows that bitrate and FID both change monotonically with $\lambda$, but at different rates, allowing for favorable trade-offs.
+Up to $\lambda{=}100$, bitrate falls steeply---down $41\%$ relative to the baseline---while FID rises only by $+3.9\%$ and CLIP score is unchanged.
+In this regime, the sampler is finding semantically equivalent, more-compressible images at essentially no perceptual cost.
+Beyond $\lambda{=}100$ the trade-off steepens, with the guidance increasingly trading away image fidelity for compressibility.
