@@ -204,7 +204,3 @@ paper/     manuscript source retained during repository preparation
 
 If you use this code, please cite *ACE: An Analytical Rate Proxy for Compression-aware
 Optimization*. Full BibTeX metadata will be added with the public paper release.
-
-## License
-
-A license has not yet been selected. Add one before publishing the repository publicly.
